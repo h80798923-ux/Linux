@@ -1,0 +1,46 @@
+name: Build TrixieOS ISO
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    container:
+      image: alpine:3.20
+      options: --privileged
+
+    steps:
+      - name: Install tools
+        run: |
+          apk update
+          apk add alpine-sdk bash git
+
+      - name: Clone aports
+        run: |
+          git clone https://gitlab.alpinelinux.org/alpine/aports.git
+
+      - name: Create mkimage config
+        run: |
+          cat <<EOF > mkimage.yaml
+arch: x86_64
+profile: virt
+tag: v3.20
+outdir: /tmp/trixieos
+EOF
+
+      - name: Build ISO
+        run: |
+          cd aports/scripts
+          bash ./mkimage.sh --yaml $GITHUB_WORKSPACE/mkimage.yaml
+
+      - name: Rename ISO
+        run: |
+          mv /tmp/trixieos/*.iso /tmp/TrixieOS.iso
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrixieOS-ISO
+          path: /tmp/TrixieOS.iso
