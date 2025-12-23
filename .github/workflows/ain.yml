@@ -1,0 +1,49 @@
+name: Build TrixieOS ISO (Alpine)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest   # zorunlu (GitHub kuralı)
+
+    container:
+      image: alpine:3.20     # ASIL ÖNEMLİ KISIM
+      options: --privileged
+
+    steps:
+    - name: Install base tools (Alpine)
+      run: |
+        apk update
+        apk add alpine-sdk bash git
+
+    - name: Clone Alpine aports
+      run: |
+        git clone https://gitlab.alpinelinux.org/alpine/aports.git
+
+    - name: Create TrixieOS overlay
+      run: |
+        mkdir -p overlay/etc
+        echo 'NAME="TrixieOS"' > overlay/etc/os-release
+        echo 'PRETTY_NAME="TrixieOS"' >> overlay/etc/os-release
+        echo 'ID=trixieos' >> overlay/etc/os-release
+
+    - name: Build TrixieOS ISO
+      run: |
+        cd aports/scripts
+        ./mkimage.sh \
+          --tag v3.20 \
+          --arch x86_64 \
+          --profile virt \
+          --overlay $GITHUB_WORKSPACE/overlay \
+          --outdir /tmp/trixieos
+
+    - name: Rename ISO
+      run: |
+        mv /tmp/trixieos/*.iso /tmp/TrixieOS.iso
+
+    - name: Upload ISO
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrixieOS-ISO
+        path: /tmp/TrixieOS.iso
