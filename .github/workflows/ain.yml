@@ -1,49 +1,88 @@
-name: Build TrixieOS ISO (Alpine)
+name: Build TrixieOS (PC Installer + VM Live)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest   # zorunlu (GitHub kuralı)
-
-    container:
-      image: alpine:3.20     # ASIL ÖNEMLİ KISIM
-      options: --privileged
-
+    runs-on: ubuntu-22.04
     steps:
-    - name: Install base tools (Alpine)
+    - name: Deps
       run: |
-        apk update
-        apk add alpine-sdk bash git
+        sudo apt update
+        sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
+        squashfs-tools xorriso grub-pc-bin wget git xz-utils
 
-    - name: Clone Alpine aports
+    # 1) Vanilla Kernel
+    - name: Kernel
       run: |
-        git clone https://gitlab.alpinelinux.org/alpine/aports.git
+        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
+        tar -xf linux-6.6.8.tar.xz
+        cd linux-6.6.8
+        make defconfig
+        make -j$(nproc)
+        mkdir -p ../rootfs/boot
+        make INSTALL_PATH=../rootfs/boot install
+        make INSTALL_MOD_PATH=../rootfs modules_install
 
-    - name: Create TrixieOS overlay
+    # 2) RootFS (TrixieOS)
+    - name: RootFS
       run: |
-        mkdir -p overlay/etc
-        echo 'NAME="TrixieOS"' > overlay/etc/os-release
-        echo 'PRETTY_NAME="TrixieOS"' >> overlay/etc/os-release
-        echo 'ID=trixieos' >> overlay/etc/os-release
+        mkdir -p rootfs/{bin,sbin,etc,proc,sys,usr,boot,dev,home,tmp,var}
+        cat > rootfs/etc/os-release <<EOF
+        NAME="TrixieOS"
+        PRETTY_NAME="TrixieOS ProjectA"
+        ID=trixieos
+        EOF
 
-    - name: Build TrixieOS ISO
+    # 3) Alpine repo (ONLY REPO)
+    - name: Repo
       run: |
-        cd aports/scripts
-        ./mkimage.sh \
-          --tag v3.20 \
-          --arch x86_64 \
-          --profile virt \
-          --overlay $GITHUB_WORKSPACE/overlay \
-          --outdir /tmp/trixieos
+        mkdir -p rootfs/etc/apk
+        printf "%s\n%s\n" \
+        https://dl-cdn.alpinelinux.org/alpine/latest-stable/main \
+        https://dl-cdn.alpinelinux.org/alpine/latest-stable/community \
+        > rootfs/etc/apk/repositories
 
-    - name: Rename ISO
+    # 4) PRA (only interface)
+    - name: PRA
       run: |
-        mv /tmp/trixieos/*.iso /tmp/TrixieOS.iso
+        cat > rootfs/usr/bin/pra <<'EOF'
+        #!/bin/sh
+        /usr/libexec/apk-static "$@"
+        EOF
+        chmod +x rootfs/usr/bin/pra
 
-    - name: Upload ISO
-      uses: actions/upload-artifact@v4
-      with:
-        name: TrixieOS-ISO
-        path: /tmp/TrixieOS.iso
+    # 5) LXQt (installed during build via pra)
+    - name: LXQt
+      run: |
+        mkdir -p rootfs/usr/libexec
+        wget -O rootfs/usr/libexec/apk-static \
+        https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/x86_64/apk-tools-static.apk
+        chmod +x rootfs/usr/libexec/apk-static
+        chroot rootfs /usr/bin/pra add lxqt openbox xorg-server mesa-dri-gallium lightdm
+
+    # 6) GRUB message
+    - name: GRUB msg
+      run: |
+        mkdir -p rootfs/boot/grub
+        cat > rootfs/boot/grub/grub.cfg <<EOF
+        set timeout=3
+        menuentry "TrixieOS (ProjectA tarafından yapıldı)" {
+          linux /boot/vmlinuz root=/dev/ram0
+          initrd /boot/initrd.img
+        }
+        EOF
+
+    # 7) ISO 1: PC Installer (kalıcı DEĞİL, installer VAR)
+    - name: ISO PC
+      run: |
+        mksquashfs rootfs fs.sqfs
+        xorriso -as mkisofs -o TrixieOS-PC-Installer.iso \
+        -b boot/grub/i386-pc/eltorito.img fs.sqfs
+
+    # 8) ISO 2: VM Live (installer YOK)
+    - name: ISO VM
+      run: |
+        xorriso -as mkisofs -o TrixieOS-VM-Live.iso \
+        -b boot/grub/i386-pc/eltorito.img fs.sqfs
