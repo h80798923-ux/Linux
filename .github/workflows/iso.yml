@@ -1,4 +1,4 @@
-name: TrixieEdu Installer ISO
+name: Build TrixieOS (PC Installer + VM Live)
 
 on:
   workflow_dispatch:
@@ -8,77 +8,88 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Install dependencies
+    - name: Deps
       run: |
         sudo apt update
         sudo apt install -y \
-          live-build \
-          debootstrap \
-          squashfs-tools \
-          xorriso \
-          grub-pc-bin \
-          grub-efi-amd64-bin \
-          mtools
+        build-essential bc bison flex libssl-dev libelf-dev \
+        squashfs-tools xorriso grub-pc-bin \
+        wget git xz-utils
 
-    - name: Build TrixieEdu ISO
+    - name: Kernel
       run: |
-        mkdir trixieedu
-        cd trixieedu
+        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
+        tar xf linux-6.6.8.tar.xz
+        cd linux-6.6.8
+        make defconfig
+        make -j$(nproc)
+        mkdir -p $GITHUB_WORKSPACE/rootfs/boot
+        make modules_install INSTALL_MOD_PATH=$GITHUB_WORKSPACE/rootfs
+        make install INSTALL_PATH=$GITHUB_WORKSPACE/rootfs/boot
 
-        lb config \
-          --distribution bookworm \
-          --archive-areas "main contrib non-free non-free-firmware" \
-          --binary-images iso-hybrid \
-          --bootappend-live "boot=live components installer" \
-          --debian-installer live \
-          --linux-flavours amd64 \
-          --firmware-binary true \
-          --firmware-chroot true
+    - name: RootFS
+      run: |
+        mkdir -p rootfs/{bin,sbin,etc,proc,sys,usr,dev,home,tmp}
+        echo 'NAME="TrixieOS"' > rootfs/etc/os-release
+        echo 'ID=trixieos' >> rootfs/etc/os-release
 
-        # =========================
-        # PACKAGE LIST
-        # =========================
-        mkdir -p config/package-lists
-        cat > config/package-lists/edu.list.chroot << 'EOF'
-        gnome-core
-        gdm3
-        network-manager
-        firefox-esr
-        libreoffice
-        calamares
-        sudo
-        EOF
+    - name: apk-tools (repo only)
+      run: |
+        git clone https://git.alpinelinux.org/apk-tools
+        cd apk-tools && make
+        make install DESTDIR=$GITHUB_WORKSPACE/rootfs
+        mkdir -p rootfs/etc/apk
+        echo https://dl-cdn.alpinelinux.org/alpine/latest-stable/main > rootfs/etc/apk/repositories
 
-        # =========================
-        # OS INFO
-        # =========================
-        mkdir -p config/includes.chroot/etc
-        cat > config/includes.chroot/etc/os-release << 'EOF'
-        NAME="TrixieEdu"
-        ID=trixieedu
-        VERSION="1.0"
-        PRETTY_NAME="TrixieEdu Linux"
-        EOF
-
-        # =========================
-        # HOOKS (KLASÖR HATASI FIX)
-        # =========================
-        mkdir -p config/hooks/normal
-
-        cat > config/hooks/normal/010-fix-permissions.chroot << 'EOF'
+    - name: PRA
+      run: |
+        cat << 'EOF' > rootfs/usr/bin/pra
         #!/bin/sh
-        chmod 4755 /usr/bin/sudo || true
+        case "$1" in
+          install) apk add "$2";;
+          remove) apk del "$2";;
+          update) apk update;;
+          search) apk search "$2";;
+          *) echo "pra install|remove|update|search";;
+        esac
         EOF
-        chmod +x config/hooks/normal/010-fix-permissions.chroot
+        chmod +x rootfs/usr/bin/pra
+        chmod 700 rootfs/sbin/apk
 
-        # =========================
-        # BUILD ISO
-        # =========================
-        lb build
-        mv live-image-amd64.hybrid.iso ../TrixieEdu-Installer.iso
+    - name: SquashFS
+      run: |
+        mkdir iso
+        mksquashfs rootfs iso/rootfs.squashfs -comp xz
 
-    - name: Upload ISO
-      uses: actions/upload-artifact@v4
+    - name: PC Installer ISO
+      run: |
+        mkdir -p pc/boot/grub
+        cp iso/rootfs.squashfs pc/
+        cat << 'EOF' > pc/boot/grub/grub.cfg
+        set timeout=3
+        menuentry "Install TrixieOS" {
+          linux /boot/vmlinuz root=/dev/ram0 rw
+          initrd /boot/initrd
+        }
+        EOF
+        grub-mkrescue -o TrixieOS-Installer-PC.iso pc
+
+    - name: VM Live ISO
+      run: |
+        mkdir -p vm/boot/grub
+        cp iso/rootfs.squashfs vm/
+        cat << 'EOF' > vm/boot/grub/grub.cfg
+        set timeout=3
+        menuentry "TrixieOS Live (VM)" {
+          linux /boot/vmlinuz root=/dev/ram0 rw
+          initrd /boot/initrd
+        }
+        EOF
+        grub-mkrescue -o TrixieOS-Live-VM.iso vm
+
+    - uses: actions/upload-artifact@v4
       with:
-        name: TrixieEdu-Installer
-        path: TrixieEdu-Installer.iso
+        name: TrixieOS-ISOs
+        path: |
+          TrixieOS-Installer-PC.iso
+          TrixieOS-Live-VM.iso
